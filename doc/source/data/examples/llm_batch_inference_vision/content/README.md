@@ -167,8 +167,8 @@ def preprocess(row: dict[str, Any]) -> dict[str, Any]:
                         "text": "Describe this image in detail. Focus on the main subjects, actions, and setting."
                     },
                     {
-                        "type": "image",
-                        "image": image  # Ray Data accepts PIL Image or image URL.
+                        "type": "image_pil",
+                        "image_pil": image  # PIL Image. For URLs, use {"type": "image_url", "image_url": {"url": "..."}}.
                     }
                 ]
             },
