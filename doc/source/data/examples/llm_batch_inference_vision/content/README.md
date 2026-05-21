@@ -113,7 +113,7 @@ processor_config = vLLMEngineProcessorConfig(
     batch_size=16,
     accelerator_type="L4",
     concurrency=4,
-    prepare_multimodal_stage={"enabled": True},  # Enable multimodal input.
+    prepare_multimodal_stage=True,  # Enable multimodal input.
 )
 
 ```
@@ -330,7 +330,7 @@ processor_config_large = vLLMEngineProcessorConfig(
     batch_size=16,
     accelerator_type="L4", # Or upgrade to larger GPU
     concurrency=10, # Increase the number of parallel workers
-    prepare_multimodal_stage={"enabled": True},  # Enable multimodal input
+    prepare_multimodal_stage=True,  # Enable multimodal input
 )
 
 # Build the LLM processor with the configuration and functions.
