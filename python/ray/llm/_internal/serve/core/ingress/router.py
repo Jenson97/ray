@@ -1,8 +1,12 @@
-from typing import Optional, Tuple
+from typing import List, Optional, Tuple
 
 from fastapi import FastAPI, HTTPException, Request
 
 from ray import serve
+from ray.llm._internal.serve.core.ingress.route_tokenizer import (
+    REQUEST_TOKEN_IDS_KWARG,
+    RouteTokenizer,
+)
 from ray.serve._private.http_util import _matches_session_id_header
 from ray.serve.exceptions import DeploymentUnavailableError
 from ray.serve.handle import DeploymentHandle
@@ -63,6 +67,9 @@ class LLMRouter:
     async def __init__(self, server: DeploymentHandle):
         self._handle: DeploymentHandle = server
         self._handle._init()
+        # Tokenize pre-routing so token IDs can be passed into choose_replica
+        # for KV-aware request routers to score against.
+        self._route_tokenizer = RouteTokenizer(self._handle)
 
     @router_app.post("/internal/route")
     async def route(self, request: Request):
@@ -79,11 +86,15 @@ class LLMRouter:
         handle = (
             self._handle.options(session_id=session_id) if session_id else self._handle
         )
+        # Tokenize before routing so a KV-aware request router can score
+        # replicas against the prompt token IDs. Best-effort: None on failure.
+        request_token_ids = await self._route_tokenizer.tokenize(body, body_truncated)
         try:
             host, port, replica_id = await self._pick_replica(
                 handle=handle,
                 request_body=body,
                 body_truncated=body_truncated,
+                request_token_ids=request_token_ids,
             )
         except (RuntimeError, DeploymentUnavailableError) as e:
             raise HTTPException(status_code=503, detail=str(e))
@@ -98,6 +109,7 @@ class LLMRouter:
         handle: DeploymentHandle,
         request_body: Optional[bytes] = None,
         body_truncated: bool = False,
+        request_token_ids: Optional[List[int]] = None,
     ) -> Tuple[str, int, str]:
         """Pick a backend HTTP replica via the deployment's request router.
 
@@ -106,10 +118,9 @@ class LLMRouter:
         routers see the session id on ``RequestMetadata``.
 
         ``request_body`` (possibly a HAProxy-truncated prefix, indicated by
-        ``body_truncated``) is forwarded to ``choose_replica`` so a future
-        body-aware policy can score replicas against the request's prompt /
-        messages without changing the /internal/route contract or the call
-        site.
+        ``body_truncated``) and ``request_token_ids`` (the prompt token IDs) are
+        forwarded to ``choose_replica`` so a KV-aware request router can score
+        replicas without changing the /internal/route contract.
 
         ``_reserve=False`` short-circuits the replica-side ``reserve_slot``
         actor RPC and the rejection-retry loop: the real request goes out via
@@ -117,11 +128,14 @@ class LLMRouter:
         the extra RPC + retry introduced burstiness compared to the prior
         local round-robin implementation.
         """
-        async with handle.choose_replica(
-            request_body=request_body,
-            body_truncated=body_truncated,
-            _reserve=False,
-        ) as selection:
+        choose_replica_kwargs = {
+            "request_body": request_body,
+            "body_truncated": body_truncated,
+            "_reserve": False,
+        }
+        if request_token_ids is not None:
+            choose_replica_kwargs[REQUEST_TOKEN_IDS_KWARG] = request_token_ids
+        async with handle.choose_replica(**choose_replica_kwargs) as selection:
             replica = selection._replica
             endpoint = replica.backend_http_endpoint
             if endpoint is None:
